@@ -693,6 +693,25 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			return nil
 		}
 
+	case "utreexod":
+		// TODO: Implement utreexod-specific chain control initialization
+		// For now, we'll use a minimal implementation similar to nochainbackend
+		backend := &NoChainBackend{}
+		source := &NoChainSource{
+			BestBlockTime: time.Now(),
+		}
+
+		cc.ChainNotifier = backend
+		cc.ChainView = backend
+		cc.FeeEstimator = backend
+
+		cc.ChainSource = source
+		cc.HealthCheck = func() error {
+			return nil
+		}
+
+		log.Warn("utreexod backend is not fully implemented yet")
+
 	default:
 		return nil, nil, fmt.Errorf("unknown node type: %s",
 			cfg.Bitcoin.Node)
