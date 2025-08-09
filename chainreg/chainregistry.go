@@ -694,23 +694,79 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		}
 
 	case "utreexod":
-		// TODO: Implement utreexod-specific chain control initialization
-		// For now, we'll use a minimal implementation similar to nochainbackend
-		backend := &NoChainBackend{}
-		source := &NoChainSource{
-			BestBlockTime: time.Now(),
+		utreexodMode := cfg.UtreexodMode
+
+		// Similar to bitcoind, get the RPC host and construct the 
+		// connection configuration
+		var utreexodHost string
+		if strings.Contains(utreexodMode.RPCHost, ":") {
+			utreexodHost = utreexodMode.RPCHost
+		} else {
+			// The RPC ports specified in chainparams.go assume
+			// btcd, which picks a different port so that btcwallet
+			// can use the same RPC port as bitcoind. We convert
+			// this back to the btcwallet/bitcoind port.
+			rpcPort, err := strconv.Atoi(cfg.ActiveNetParams.RPCPort)
+			if err != nil {
+				return nil, nil, err
+			}
+			rpcPort -= 2
+			utreexodHost = fmt.Sprintf("%v:%d",
+				utreexodMode.RPCHost, rpcPort)
 		}
 
+		// Construct WebSocket URL if not provided
+		wsURL := utreexodMode.WSEndpoint
+		if wsURL == "" {
+			// Default to ws://[host]/ws
+			if strings.HasPrefix(utreexodHost, "localhost") || 
+			   strings.HasPrefix(utreexodHost, "127.0.0.1") {
+				wsURL = fmt.Sprintf("ws://%s/ws", utreexodHost)
+			} else {
+				// Parse host to construct proper WebSocket URL
+				host := strings.Split(utreexodHost, ":")[0]
+				wsURL = fmt.Sprintf("ws://%s:8332/ws", host)
+			}
+		}
+
+		// Create RPC client configuration
+		rpcConfig := &rpcclient.ConnConfig{
+			Host:                 utreexodHost,
+			User:                 utreexodMode.RPCUser,
+			Pass:                 utreexodMode.RPCPass,
+			DisableTLS:           true,
+			DisableConnectOnNew:  true,
+			DisableAutoReconnect: false,
+			HTTPPostMode:         true,
+		}
+
+		// Create the utreexod client
+		utreexodClient, err := NewUtreexodClient(rpcConfig, wsURL)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// For now, use a basic implementation until we implement
+		// proper notifiers and chain view
+		backend := &NoChainBackend{}
+		
 		cc.ChainNotifier = backend
 		cc.ChainView = backend
-		cc.FeeEstimator = backend
+		cc.ChainSource = utreexodClient.Client
+		
+		// Use static fee estimator for now
+		cc.FeeEstimator = chainfee.NewStaticEstimator(
+			chainfee.SatPerKWeight(12500), // 50 sat/vbyte
+			chainfee.SatPerKWeight(12500),
+		)
 
-		cc.ChainSource = source
+		// Health check
 		cc.HealthCheck = func() error {
-			return nil
+			_, _, err := cc.ChainSource.GetBestBlock()
+			return err
 		}
 
-		log.Warn("utreexod backend is not fully implemented yet")
+		log.Info("Using utreexod backend")
 
 	default:
 		return nil, nil, fmt.Errorf("unknown node type: %s",

@@ -1,0 +1,39 @@
+From 8622ebf6eaa19b9f3ff310fd48e7eef65a90332c Mon Sep 17 00:00:00 2001
+From: 0xsufi <0xsufi@noma.money>
+Date: Sat, 9 Aug 2025 02:04:29 -0400
+Subject: [PATCH] Add utreexod configuration structure
+
+---
+ lncfg/utreexod.go | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+ create mode 100644 lncfg/utreexod.go
+
+diff --git a/lncfg/utreexod.go b/lncfg/utreexod.go
+new file mode 100644
+index 000000000..4d069d035
+--- /dev/null
++++ b/lncfg/utreexod.go
+@@ -0,0 +1,19 @@
++package lncfg
++
++import "time"
++
++// Utreexod holds the configuration options for the daemon's connection to
++// utreexod.
++type Utreexod struct {
++	Dir                  string        `long:"dir" description:"The base directory that contains the node's data, logs, configuration file, etc."`
++	ConfigPath           string        `long:"config" description:"Configuration filepath. If not set, will default to the default filename under 'dir'."`
++	RPCCookie            string        `long:"rpccookie" description:"Authentication cookie file for RPC connections. If not set, will default to .cookie under 'dir'."`
++	RPCHost              string        `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
++	RPCUser              string        `long:"rpcuser" description:"Username for RPC connections"`
++	RPCPass              string        `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
++	WSEndpoint           string        `long:"wsendpoint" description:"The WebSocket endpoint for real-time notifications. If not set, defaults to ws://[rpchost]/ws"`
++	EstimateMode         string        `long:"estimatemode" description:"The fee estimate mode. Must be either ECONOMICAL or CONSERVATIVE."`
++	PrunedNodeMaxPeers   int           `long:"pruned-node-max-peers" description:"The maximum number of peers lnd will choose from the backend node to retrieve pruned blocks from. This only applies to pruned nodes."`
++	BlockPollingInterval time.Duration `long:"blockpollinginterval" description:"The interval that will be used to poll utreexod for new blocks if WebSocket connection fails."`
++	TxPollingInterval    time.Duration `long:"txpollinginterval" description:"The interval that will be used to poll utreexod for new tx if WebSocket connection fails."`
++}
+\ No newline at end of file
+-- 
+2.43.0
+

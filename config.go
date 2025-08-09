@@ -379,6 +379,7 @@ type Config struct {
 	BtcdMode     *lncfg.Btcd     `group:"btcd" namespace:"btcd"`
 	BitcoindMode *lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
 	NeutrinoMode *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
+	UtreexodMode *lncfg.Utreexod `group:"utreexod" namespace:"utreexod"`
 
 	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
@@ -611,6 +612,10 @@ func DefaultConfig() Config {
 			UserAgentName:    neutrino.UserAgentName,
 			UserAgentVersion: neutrino.UserAgentVersion,
 			MaxPeers:         defaultNeutrinoMaxPeers,
+		},
+		UtreexodMode: &lncfg.Utreexod{
+			Dir:     defaultBitcoindDir,
+			RPCHost: defaultRPCHost,
 		},
 		BlockCacheSize:     defaultBlockCacheSize,
 		MaxPendingChannels: lncfg.DefaultMaxPendingChannels,
@@ -1003,6 +1008,9 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.BitcoindMode.ConfigPath,
 	)
 	cfg.BitcoindMode.RPCCookie = CleanAndExpandPath(cfg.BitcoindMode.RPCCookie)
+	cfg.UtreexodMode.Dir = CleanAndExpandPath(cfg.UtreexodMode.Dir)
+	cfg.UtreexodMode.ConfigPath = CleanAndExpandPath(cfg.UtreexodMode.ConfigPath)
+	cfg.UtreexodMode.RPCCookie = CleanAndExpandPath(cfg.UtreexodMode.RPCCookie)
 	cfg.Tor.PrivateKeyPath = CleanAndExpandPath(cfg.Tor.PrivateKeyPath)
 	cfg.Tor.WatchtowerKeyPath = CleanAndExpandPath(cfg.Tor.WatchtowerKeyPath)
 	cfg.Watchtower.TowerDir = CleanAndExpandPath(cfg.Watchtower.TowerDir)
@@ -1336,8 +1344,18 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		// backend whatsoever (pure signing mode).
 
 	case "utreexod":
-		// TODO: Add utreexod-specific configuration here
-		// For now, we'll just allow it to pass validation
+		if cfg.Bitcoin.SimNet {
+			return nil, mkErr("utreexod does not " +
+				"support simnet")
+		}
+
+		err := parseRPCParams(
+			cfg.Bitcoin, cfg.UtreexodMode, cfg.ActiveNetParams,
+		)
+		if err != nil {
+			return nil, mkErr("unable to load RPC "+
+				"credentials for utreexod: %v", err)
+		}
 
 	default:
 		str := "only btcd, bitcoind, neutrino, and utreexod mode " +
@@ -2002,6 +2020,48 @@ func parseRPCParams(cConfig *lncfg.Chain, nodeConfig interface{},
 				"with %[1]v.zmqpubrawblock, %[1]v.zmqpubrawtx",
 				daemonName)
 		}
+
+	case *lncfg.Utreexod:
+		// Resolves environment variable references in RPCUser and
+		// RPCPass fields.
+		conf.RPCUser = supplyEnvValue(conf.RPCUser)
+		conf.RPCPass = supplyEnvValue(conf.RPCPass)
+
+		// Set the daemon name for displaying proper errors.
+		daemonName = "utreexod"
+		confDir = conf.Dir
+		confFile = conf.ConfigPath
+		confFileBase = BitcoinChainName
+
+		// Check that cookie and credentials don't contradict each
+		// other
+		if conf.RPCCookie != "" && (conf.RPCUser != "" ||
+			conf.RPCPass != "") {
+
+			return fmt.Errorf("cannot set both rpccookie and " +
+				"rpcuser/rpcpass")
+		}
+
+		// We convert the cookie into a user name and password.
+		if conf.RPCCookie != "" {
+			cookie, err := os.ReadFile(conf.RPCCookie)
+			if err != nil {
+				return fmt.Errorf("cannot read cookie file: %w",
+					err)
+			}
+
+			splitCookie := strings.Split(string(cookie), ":")
+			if len(splitCookie) != 2 {
+				return fmt.Errorf("cookie file has a wrong " +
+					"format")
+			}
+			conf.RPCUser = splitCookie[0]
+			conf.RPCPass = splitCookie[1]
+		}
+
+		if conf.RPCUser != "" && conf.RPCPass != "" {
+			return nil
+		}
 	}
 
 	// If we're in simnet mode, then the running btcd instance won't read
@@ -2039,6 +2099,19 @@ func parseRPCParams(cConfig *lncfg.Chain, nodeConfig interface{},
 		}
 		nConf.RPCUser, nConf.RPCPass = rpcUser, rpcPass
 		nConf.ZMQPubRawBlock, nConf.ZMQPubRawTx = zmqBlockHost, zmqTxHost
+
+	case "utreexod":
+		nConf := nodeConfig.(*lncfg.Utreexod)
+		// For utreexod, we'll try to extract RPC params similar to bitcoind
+		// but without ZMQ since utreexod uses WebSocket for notifications
+		rpcUser, rpcPass, _, _, err :=
+			extractBitcoindRPCParams(netParams.Params.Name,
+				nConf.Dir, confFile, nConf.RPCCookie)
+		if err != nil {
+			return fmt.Errorf("unable to extract RPC credentials: "+
+				"%v, cannot start w/o RPC connection", err)
+		}
+		nConf.RPCUser, nConf.RPCPass = rpcUser, rpcPass
 	}
 
 	fmt.Printf("Automatically obtained %v's RPC credentials\n", daemonName)
