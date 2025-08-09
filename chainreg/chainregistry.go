@@ -56,6 +56,9 @@ type Config struct {
 	// BtcdMode defines settings for connecting to a btcd node.
 	BtcdMode *lncfg.Btcd
 
+	// UtreexodMode defines settings for connecting to a utreexod node.
+	UtreexodMode *lncfg.Utreexod
+
 	// HeightHintDB is a pointer to the database that stores the height
 	// hints.
 	HeightHintDB kvdb.Backend
@@ -715,36 +718,6 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 				utreexodMode.RPCHost, rpcPort)
 		}
 
-		// Construct WebSocket URL if not provided
-		wsURL := utreexodMode.WSEndpoint
-		if wsURL == "" {
-			// Default to ws://[host]/ws
-			if strings.HasPrefix(utreexodHost, "localhost") || 
-			   strings.HasPrefix(utreexodHost, "127.0.0.1") {
-				wsURL = fmt.Sprintf("ws://%s/ws", utreexodHost)
-			} else {
-				// Parse host to construct proper WebSocket URL
-				host := strings.Split(utreexodHost, ":")[0]
-				wsURL = fmt.Sprintf("ws://%s:8332/ws", host)
-			}
-		}
-
-		// Create RPC client configuration
-		rpcConfig := &rpcclient.ConnConfig{
-			Host:                 utreexodHost,
-			User:                 utreexodMode.RPCUser,
-			Pass:                 utreexodMode.RPCPass,
-			DisableTLS:           true,
-			DisableConnectOnNew:  true,
-			DisableAutoReconnect: false,
-			HTTPPostMode:         true,
-		}
-
-		// Create the utreexod client
-		utreexodClient, err := NewUtreexodClient(rpcConfig, wsURL)
-		if err != nil {
-			return nil, nil, err
-		}
 
 		// For now, use a basic implementation until we implement
 		// proper notifiers and chain view
@@ -752,7 +725,37 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		
 		cc.ChainNotifier = backend
 		cc.ChainView = backend
-		cc.ChainSource = utreexodClient.Client
+		
+		// Since utreexod is similar to bitcoind, we can try to create
+		// a bitcoind connection with our RPC config
+		bitcoindCfg := &chain.BitcoindConfig{
+			ChainParams:        cfg.ActiveNetParams.Params,
+			Host:               utreexodHost,
+			User:               utreexodMode.RPCUser,
+			Pass:               utreexodMode.RPCPass,
+			Dialer:             cfg.Dialer,
+			PrunedModeMaxPeers: utreexodMode.PrunedNodeMaxPeers,
+		}
+		
+		// Use polling mode for now since we don't have ZMQ setup
+		bitcoindCfg.PollingConfig = &chain.PollingConfig{
+			BlockPollingInterval:    5 * time.Second,
+			TxPollingInterval:       time.Minute,
+			TxPollingIntervalJitter: 0.1,
+		}
+		
+		// Create a bitcoind connection for utreexod
+		bitcoindConn, err := chain.NewBitcoindConn(bitcoindCfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		
+		if err := bitcoindConn.Start(); err != nil {
+			return nil, nil, fmt.Errorf("unable to connect to "+
+				"utreexod: %v", err)
+		}
+		
+		cc.ChainSource = bitcoindConn.NewBitcoindClient()
 		
 		// Use static fee estimator for now
 		cc.FeeEstimator = chainfee.NewStaticEstimator(
