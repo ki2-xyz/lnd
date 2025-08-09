@@ -1335,8 +1335,12 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		// Nothing to configure, we're running without any chain
 		// backend whatsoever (pure signing mode).
 
+	case "utreexod":
+		// TODO: Add utreexod-specific configuration here
+		// For now, we'll just allow it to pass validation
+
 	default:
-		str := "only btcd, bitcoind, and neutrino mode " +
+		str := "only btcd, bitcoind, neutrino, and utreexod mode " +
 			"supported for bitcoin at this time"
 
 		return nil, mkErr(str)
