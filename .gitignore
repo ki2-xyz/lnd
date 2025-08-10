@@ -85,3 +85,6 @@ coverage.txt
 
 # All test data generated from rapid.
 */testdata
+
+# Other
+*.sh
