@@ -1349,6 +1349,9 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 				"support simnet")
 		}
 
+		// Log the RPC host before parsing
+		fmt.Printf("DEBUG: Before parseRPCParams - utreexod.rpchost = %s\n", cfg.UtreexodMode.RPCHost)
+		
 		err := parseRPCParams(
 			cfg.Bitcoin, cfg.UtreexodMode, cfg.ActiveNetParams,
 		)
@@ -1356,6 +1359,9 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 			return nil, mkErr("unable to load RPC "+
 				"credentials for utreexod: %v", err)
 		}
+		
+		// Log the RPC host after parsing
+		fmt.Printf("DEBUG: After parseRPCParams - utreexod.rpchost = %s\n", cfg.UtreexodMode.RPCHost)
 
 	default:
 		str := "only btcd, bitcoind, neutrino, and utreexod mode " +

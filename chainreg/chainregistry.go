@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs/bitcoindnotify"
 	"github.com/lightningnetwork/lnd/chainntnfs/btcdnotify"
 	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
+	"github.com/lightningnetwork/lnd/chainntnfs/utreexodnotify"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph/db/models"
@@ -699,73 +700,90 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 	case "utreexod":
 		utreexodMode := cfg.UtreexodMode
 
-		// Similar to bitcoind, get the RPC host and construct the 
-		// connection configuration
+		// Get the RPC host
 		var utreexodHost string
-		if strings.Contains(utreexodMode.RPCHost, ":") {
+		
+		// Debug logging to understand config
+		log.Infof("DEBUG: utreexodMode.RPCHost = '%s'", utreexodMode.RPCHost)
+		log.Infof("DEBUG: utreexodMode.RPCUser = '%s'", utreexodMode.RPCUser)
+		log.Infof("DEBUG: utreexodMode.RPCCookie = '%s'", utreexodMode.RPCCookie)
+		
+		// Check if RPCHost contains a port
+		if utreexodMode.RPCHost != "" && strings.Contains(utreexodMode.RPCHost, ":") {
+			// Use the host:port as provided
 			utreexodHost = utreexodMode.RPCHost
 		} else {
-			// The RPC ports specified in chainparams.go assume
-			// btcd, which picks a different port so that btcwallet
-			// can use the same RPC port as bitcoind. We convert
-			// this back to the btcwallet/bitcoind port.
+			// Use default port calculation
 			rpcPort, err := strconv.Atoi(cfg.ActiveNetParams.RPCPort)
 			if err != nil {
 				return nil, nil, err
 			}
+			// For utreexod, use bitcoind-style port (testnet: 18332)
 			rpcPort -= 2
-			utreexodHost = fmt.Sprintf("%v:%d",
-				utreexodMode.RPCHost, rpcPort)
+			
+			host := utreexodMode.RPCHost
+			if host == "" {
+				host = "localhost"
+			}
+			utreexodHost = fmt.Sprintf("%v:%d", host, rpcPort)
+		}
+		
+		log.Infof("Connecting to utreexod at %s", utreexodHost)
+
+		// Create RPC client configuration
+		rpcConfig := &rpcclient.ConnConfig{
+			Host:                 utreexodHost,
+			User:                 utreexodMode.RPCUser,
+			Pass:                 utreexodMode.RPCPass,
+			DisableTLS:           true,
+			DisableConnectOnNew:  true,
+			DisableAutoReconnect: false,
+			HTTPPostMode:         true,
 		}
 
-
-		// For now, use a basic implementation until we implement
-		// proper notifiers and chain view
-		backend := &NoChainBackend{}
-		
-		cc.ChainNotifier = backend
-		cc.ChainView = backend
-		
-		// Since utreexod is similar to bitcoind, we can try to create
-		// a bitcoind connection with our RPC config
-		bitcoindCfg := &chain.BitcoindConfig{
-			ChainParams:        cfg.ActiveNetParams.Params,
-			Host:               utreexodHost,
-			User:               utreexodMode.RPCUser,
-			Pass:               utreexodMode.RPCPass,
-			Dialer:             cfg.Dialer,
-			PrunedModeMaxPeers: utreexodMode.PrunedNodeMaxPeers,
-		}
-		
-		// Use polling mode for now since we don't have ZMQ setup
-		bitcoindCfg.PollingConfig = &chain.PollingConfig{
-			BlockPollingInterval:    5 * time.Second,
-			TxPollingInterval:       time.Minute,
-			TxPollingIntervalJitter: 0.1,
-		}
-		
-		// Create a bitcoind connection for utreexod
-		bitcoindConn, err := chain.NewBitcoindConn(bitcoindCfg)
+		// Create the RPC client
+		utreexodConn, err := rpcclient.New(rpcConfig, nil)
 		if err != nil {
 			return nil, nil, err
 		}
-		
-		if err := bitcoindConn.Start(); err != nil {
-			return nil, nil, fmt.Errorf("unable to connect to "+
-				"utreexod: %v", err)
+
+		// Create the chain source
+		chainSource := NewUtreexodChainSource(utreexodConn)
+		if err := chainSource.Start(); err != nil {
+			return nil, nil, fmt.Errorf("unable to start utreexod chain source: %v", err)
 		}
-		
-		cc.ChainSource = bitcoindConn.NewBitcoindClient()
-		
-		// Use static fee estimator for now
-		cc.FeeEstimator = chainfee.NewStaticEstimator(
-			chainfee.SatPerKWeight(12500), // 50 sat/vbyte
-			chainfee.SatPerKWeight(12500),
+		cc.ChainSource = chainSource
+
+		// Create the chain notifier
+		chainNotifier := utreexodnotify.New(
+			utreexodConn, cfg.ActiveNetParams.Params, 
+			hintCache, hintCache, cfg.BlockCache,
 		)
+		cc.ChainNotifier = chainNotifier
+		cc.MempoolNotifier = chainNotifier
+
+		// Create the chain view
+		cc.ChainView, err = chainview.NewUtreexodFilteredChainView(
+			utreexodConn, cfg.BlockCache,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to create utreexod chain view: %v", err)
+		}
+
+		// Set up fee estimator
+		if cfg.Fee.URL == "" {
+			// Use utreexod's fee estimator
+			cc.FeeEstimator, err = chainfee.NewUtreexodEstimator(
+				utreexodConn, chainfee.SatPerKWeight(12500),
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 
 		// Health check
 		cc.HealthCheck = func() error {
-			_, _, err := cc.ChainSource.GetBestBlock()
+			_, _, err := utreexodConn.GetBestBlock()
 			return err
 		}
 
